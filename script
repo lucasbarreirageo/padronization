@@ -1,0 +1,971 @@
+# Carregando bibliotecas necessárias
+library(sf)
+library(dplyr)
+library(terra)
+library(tidyverse)
+library(knitr)
+library(scales)
+
+# Configuração de área de trabalho
+setwd('D:/PAN - DELTA/ANALISES/priorizacao')
+getwd()
+
+#' Configuração inicial do ambiente de trabalho
+#' @param base_dir Diretório base para o projeto
+#' @return Lista com caminhos dos diretórios
+setup_environment <- function(base_dir) {
+  dirs <- list(
+    priorizacao = file.path(base_dir, "ANALISES/priorizacao"),
+    pan = file.path(base_dir, "ANALISES/dados_analise_r/territorio"),
+    spp = file.path(base_dir, "ANALISES/dados_analise_r/spp"),
+    #mapbiomas = file.path(base_dir, "ANALISES/dados_analise_r/mapbiomas"),
+    otto = file.path(base_dir, "ANALISES/dados_analise_r/otto"),
+    uc = file.path(base_dir, "ANALISES/dados_analise_r/uc"),
+    mineracao = file.path(base_dir, "ANALISES/dados_analise_r/mineracao"),
+    #fogo = file.path(base_dir, "ANALISES/dados_analise_r/fogo"),
+    energia = file.path(base_dir, "ANALISES/dados_analise_r/energia")
+  )
+  
+  # Verificar existência dos diretórios
+  lapply(dirs, function(d) {
+    if (!dir.exists(d)) stop(paste("Diretório não encontrado:", d))
+  })
+  
+  return(dirs)
+}
+
+#' Carregar e processar território PAN
+#' @param pan_dir Diretório contendo shapefile do PAN
+#' @return Objeto sf do território PAN
+load_pan_territory <- function(pan_dir) {
+  pan_file <- list.files(path = pan_dir, pattern = "\\.shp$", full.names = TRUE)[1]
+  if (is.na(pan_file)) stop("Shapefile do PAN não encontrado")
+  
+  pan <- st_read(pan_file, quiet = TRUE) %>%
+    st_transform(crs = 4674)
+  
+  return(pan)
+}
+
+#' Processar dados de espécies a partir de CSVs
+#' @param spp_dir Diretório com dados das espécies
+#' @param base_shp_name Nome do arquivo shapefile base
+process_species_from_csv <- function(spp_dir, base_shp_name) {
+  base_shp <- st_read(file.path(spp_dir, base_shp_name), quiet = TRUE)%>%
+    mutate(across(where(is.character), ~ iconv(., from = "", to = "UTF-8")))
+  csv_files <- list.files(path = spp_dir, pattern = "*.csv", full.names = TRUE)
+  
+  for(csv_file in csv_files) {
+    species_data <- read_csv(csv_file)
+    species_list <- species_data[[1]]
+    output_name <- tools::file_path_sans_ext(basename(csv_file))
+    
+    filtered_shp <- base_shp %>%
+      filter(specie_fb %in% species_list)
+    
+    cat("Arquivo:", output_name, "\n")
+    cat("Espécies no CSV:", length(species_list), "\n")
+    cat("Espécies encontradas:", nrow(filtered_shp), "\n")
+    print("Lista de espécies:")
+    print(species_list)
+    
+    if(nrow(filtered_shp) > 0) {
+      st_write(filtered_shp, 
+               file.path(spp_dir, paste0(output_name, ".shp")), 
+               append = FALSE)
+    }
+  }
+}
+
+#' Criar raster padrão
+#' @param pan_sf Objeto sf do território PAN
+#' @param resolution Resolução desejada do raster
+#' @return Objeto raster padrão
+create_standard_raster <- function(pan_sf, resolution = c(0.006, 0.006)) {
+  r_padrao <- rast()
+  terra::crs(r_padrao) <- "EPSG:4674"
+  ext(r_padrao) <- ext(pan_sf)
+  res(r_padrao) <- resolution
+  values(r_padrao) <- 1
+  
+  return(r_padrao)
+}
+
+#' Baixar e processar raster do MapBiomas
+#' @param mapbiomas_url URL do arquivo MapBiomas
+#' @param pan_sf Objeto sf do território PAN
+#' @return Raster processado
+download_mapbiomas <- function(mapbiomas_url, pan_sf) {
+  # Criar diretório temporário para download
+  temp_file <- file.path(tempdir(), "mapbiomas_temp.tif")
+  
+  tryCatch({
+    # Download do arquivo
+    download.file(mapbiomas_url, temp_file, mode = "wb")
+    
+    # Configurar opções do GDAL para otimizar memória
+    terra::gdalCache(2048)
+    
+    # Abrir o raster com configurações otimizadas
+    raster_mapbiomas <- rast(temp_file)
+    
+    # Recortar para extensão do PAN
+    raster_mapbiomas <- terra::crop(raster_mapbiomas, terra::vect(pan_sf))
+    raster_mapbiomas <- terra::mask(raster_mapbiomas, terra::vect(pan_sf))
+    
+    # Ajustar CRS se necessário
+    if (!crs(raster_mapbiomas) == "EPSG:4674") {
+      raster_mapbiomas <- terra::project(raster_mapbiomas, "EPSG:4674", 
+                                         method = "near", 
+                                         threads = TRUE)
+    }
+    
+    return(list(raster = raster_mapbiomas, temp_file = temp_file))
+    
+  }, error = function(e) {
+    stop("Erro ao processar MapBiomas: ", e$message)
+  })
+}
+
+#' Baixar e processar raster do MapBiomas Frequencia de FOGO
+#' @param mapbiomas_fogo_url URL do arquivo MapBiomas
+#' @param pan_sf Objeto sf do território PAN
+#' @return Raster processado
+download_mapbiomas_fogo <- function(mapbiomas_fogo_url, pan_sf) {
+  # Criar diretório temporário para download
+  temp_file_fogo <- file.path(tempdir(), "mapbiomas_fogo_temp.tif")
+  
+  tryCatch({
+    # Download do arquivo
+    download.file(mapbiomas_fogo_url, temp_file_fogo, mode = "wb")
+    
+    # Configurar opções do GDAL para otimizar memória
+    terra::gdalCache(2048)
+    
+    # Abrir o raster com configurações otimizadas
+    raster_mapbiomas_fogo <- rast(temp_file_fogo)
+    
+    # Recortar para extensão do PAN
+    raster_mapbiomas_fogo <- terra::crop(raster_mapbiomas_fogo, terra::vect(pan_sf))
+    raster_mapbiomas_fogo <- terra::mask(raster_mapbiomas_fogo, terra::vect(pan_sf))
+    
+    # Ajustar CRS se necessário
+    if (!crs(raster_mapbiomas_fogo) == "EPSG:4674") {
+      raster_mapbiomas_fogo <- terra::project(raster_mapbiomas_fogo, "EPSG:4674", 
+                                         method = "near", 
+                                         threads = TRUE)
+    }
+    
+    return(list(raster_fogo = raster_mapbiomas_fogo, temp_file_fogo = temp_file_fogo))
+    
+  }, error = function(e) {
+    stop("Erro ao processar MapBiomas: ", e$message)
+  })
+}
+
+#' Processar dados de espécies com análise MapBiomas (espécies)
+#' @param spp_file Caminho do arquivo shapefile das espécies
+#' @param mapbiomas_url URL do arquivo MapBiomas
+#' @param output_dir Diretório de saída
+#' @param r_padrao Raster padrão
+#' @param pan_sf Objeto sf do território PAN
+process_species <- function(spp_file, raster_mapbiomas, output_dir, r_padrao, pan_sf) {
+  # Ler shapefile das espécies
+  spp <- st_read(spp_file, quiet = TRUE)
+  
+  # Criar diretório para saída
+  pasta_saida <- file.path(output_dir, "spp_alvo")
+  if (!dir.exists(pasta_saida)) dir.create(pasta_saida)
+  
+  # Criar hulls convexos para cada espécie
+  hulls <- spp %>%
+    group_by(specie_fb) %>%
+    summarise(geometry = st_combine(geometry)) %>%
+    st_convex_hull()
+  
+  # Salvar hulls em GeoPackage
+  st_write(hulls, file.path(output_dir, "todas_spp_alvo.gpkg"), delete_dsn = TRUE)
+  
+  # Reclassificar MapBiomas (formações florestais e savânicas)
+  valores_interesse <- c(3,4)
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- terra::classify(raster_mapbiomas, rcl = rcl, others = 0)
+  
+  # Processar cada espécie
+  for (i in 1:nrow(hulls)) {
+    especie <- hulls[i, ]
+    if (st_is_empty(especie$geometry)) {
+      warning(sprintf("Geometria vazia para %s", especie$specie_fb))
+      next
+    }
+    
+    try({
+      # Processar MapBiomas para a espécie
+      especie_vetor <- terra::vect(especie)
+      
+      # Recortar área da espécie
+      raster_recortado <- terra::crop(raster_extraido, especie_vetor, snap = "out")
+      raster_recortado <- terra::mask(raster_recortado, especie_vetor)
+      
+      if (!is.null(raster_recortado) && !all(is.na(values(raster_recortado)))) {
+        # Reamostrar
+        raster_padronizado <- terra::resample(raster_recortado, r_padrao, 
+                                              method = "near",
+                                              threads = TRUE)
+        
+        output_mapbiomas <- file.path(pasta_saida, 
+                                      paste0(make.names(especie$specie_fb), ".tif"))
+        
+        # Escrever com compressão
+        terra::writeRaster(raster_padronizado, output_mapbiomas, 
+                           overwrite = TRUE,
+                           gdal = c("COMPRESS=LZW", "PREDICTOR=2"))
+      }
+      
+      # Limpar memória
+      rm(raster_recortado, raster_padronizado)
+      gc()
+    })
+  }
+}
+
+#' Processar dados de espécies beneficiadas (DD e NT)
+#' @param benefited_spp_file Caminho do arquivo shapefile das espécies beneficiadas
+#' @param mapbiomas_url URL do arquivo MapBiomas
+#' @param output_dir Diretório de saída
+#' @param r_padrao Raster padrão
+#' @param pan_sf Objeto sf do território PAN
+process_benefited_species <- function(benefited_spp_file, raster_mapbiomas, output_dir, r_padrao, pan_sf) {
+  benefited_spp <- st_read(benefited_spp_file, quiet = TRUE)
+  
+  # Criar diretório para saída
+  pasta_saida <- file.path(output_dir, "spp_beneficiadas")
+  if (!dir.exists(pasta_saida)) dir.create(pasta_saida)
+  
+  # Criar hulls convexos para cada espécie beneficiada
+  hulls <- benefited_spp %>%
+    group_by(specie_fb) %>%
+    summarise(geometry = st_combine(geometry)) %>%
+    st_convex_hull()
+  
+  # Salvar hulls em GeoPackage
+  st_write(hulls, file.path(output_dir, "todas_spp_beneficiadas.gpkg"), delete_dsn = TRUE)
+  
+  # Reclassificar MapBiomas
+  valores_interesse <- c(3,4)
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- terra::classify(raster_mapbiomas, rcl = rcl, others = 0)
+  
+  # Processar cada espécie beneficiada
+  for (i in 1:nrow(hulls)) {
+    especie <- hulls[i, ]
+    if (st_is_empty(especie$geometry)) {
+      warning(sprintf("Geometria vazia para %s", especie$specie_fb))
+      next
+    }
+    
+    try({
+      # Processar MapBiomas para a espécie
+      especie_vetor <- terra::vect(especie)
+      
+      # Recortar área da espécie
+      raster_recortado <- terra::crop(raster_extraido, especie_vetor, snap = "out")
+      raster_recortado <- terra::mask(raster_recortado, especie_vetor)
+      
+      if (!is.null(raster_recortado) && !all(is.na(values(raster_recortado)))) {
+        # Reamostrar
+        raster_padronizado <- terra::resample(raster_recortado, r_padrao,
+                                              method = "near",
+                                              threads = TRUE)
+        
+        output_mapbiomas <- file.path(pasta_saida,
+                                      paste0(make.names(especie$specie_fb), "_beneficiada.tif"))
+        
+        # Escrever com compressão
+        terra::writeRaster(raster_padronizado, output_mapbiomas,
+                           overwrite = TRUE,
+                           gdal = c("COMPRESS=LZW", "PREDICTOR=2"))
+      }
+      
+      # Limpar memória
+      rm(raster_recortado, raster_padronizado)
+      gc()
+    })
+  }
+}
+
+#' Processar dados das Ottobacias
+#' @param otto_dir Diretório com dados das Ottobacias
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_otto <- function(otto_dir, r_padrao, output_dir, pan_sf) {
+  otto_file <- list.files(path = otto_dir, pattern = "\\.shp$", full.names = TRUE)[1]
+  if (is.na(otto_file)) stop("Arquivo Ottobacias não encontrado")
+  
+  otto_shp <- st_read(otto_file, quiet = TRUE) %>%
+    st_transform(crs = 4674)
+  
+  if (!"wts_cd_pfa" %in% names(otto_shp)) {
+    stop("Campo 'wts_cd_pfa' não encontrado no shapefile das Ottobacias")
+  }
+  
+  otto_vect <- terra::vect(otto_shp)
+  otto_raster <- terra::rasterize(otto_vect, r_padrao, field = "wts_cd_pfa") %>%
+    terra::mask(terra::vect(pan_sf))
+  
+  otto_raster[is.na(otto_raster)] <- 0
+  
+  terra::writeRaster(otto_raster, 
+                     file.path(output_dir, "otto.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados das Unidades de Conservação
+#' @param uc_dir Diretório com dados das UCs
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_uc <- function(uc_dir, r_padrao, output_dir, pan_sf) {
+  uc_file <- list.files(path = uc_dir, pattern = "\\.shp$", full.names = TRUE)[1]
+  if (is.na(uc_file)) stop("Arquivo UCs não encontrado")
+  
+  uc_shp <- st_read(uc_file, quiet = TRUE) %>%
+    st_transform(crs = 4674) %>%
+    filter(grupo == "Proteção Integral")  # Filtra apenas UCs de Proteção Integral
+  
+  # Verifica se existem UCs de Proteção Integral
+  if (nrow(uc_shp) == 0) {
+    warning("Nenhuma UC de Proteção Integral encontrada no arquivo")
+    return(NULL)
+  }
+  
+  uc_vect <- terra::vect(uc_shp)
+  uc_raster <- terra::rasterize(uc_vect, r_padrao, field = 1)
+  
+  uc_raster[!is.na(uc_raster)] <- 0  # Áreas dentro das UCs
+  uc_raster[is.na(uc_raster)] <- 1   # Áreas fora das UCs
+  
+  terra::writeRaster(uc_raster,
+                     file.path(output_dir, "ucs_protecao_integral.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados de Mineração (vetor de pressão)
+#' @param mineracao_dir Diretório com dados de mineração
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_mineracao <- function(mineracao_dir, r_padrao, output_dir, pan_sf) {
+  mineracao_file <- list.files(path = mineracao_dir, pattern = "\\.shp$", full.names = TRUE)[1]
+  if (is.na(mineracao_file)) stop("Arquivo mineração não encontrado")
+  
+  mineracao_shp <- st_read(mineracao_file, quiet = TRUE) %>%
+    st_transform(crs = 4674)
+  
+  mineracao_vect <- terra::vect(mineracao_shp)
+  mineracao_raster <- terra::rasterize(mineracao_vect, r_padrao, field = "NUMERO") %>%
+    terra::mask(terra::vect(pan_sf))
+  
+  mineracao_raster[is.na(mineracao_raster)] <- 0
+  #mineracao_raster[mineracao_raster == 0] <- NA
+  mineracao_raster <- terra::mask( mineracao_raster, terra::vect(pan_sf))
+  
+  terra::writeRaster(mineracao_raster,
+                     file.path(output_dir, "mineracao.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados de Energia (vetor de pressão)
+#' @param energia_dir Diretório com dados de mineração
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_energia <- function(energia_dir, r_padrao, output_dir, pan_sf) {
+  energia_file <- list.files(path = energia_dir, pattern = "\\.shp$", full.names = TRUE)[1]
+  if (is.na(energia_file)) stop("Arquivo mineração não encontrado")
+  
+  energia_shp <- st_read(energia_file, quiet = TRUE) %>%
+    st_transform(crs = 4674)
+  
+  energia_vect <- terra::vect(energia_shp)
+  energia_raster <- terra::rasterize(energia_vect, r_padrao) %>% #, field = "id"
+    terra::mask(terra::vect(pan_sf))
+  
+  energia_raster[is.na(energia_raster)] <- 0
+  #mineracao_raster[mineracao_raster == 0] <- NA
+  energia_raster <- terra::mask( energia_raster, terra::vect(pan_sf))
+  
+  terra::writeRaster(energia_raster,
+                     file.path(output_dir, "energia.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados do MapBiomas (vetor de pressão)
+#' @param mapbiomas_url URL dos dados do MapBiomas
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_mapbiomas_agricultura <- function(raster_mapbiomas, r_padrao, output_dir, pan_sf) {
+  # Para uso e ocupação do solo
+  valores_interesse <- c(15, 21, 24, 25, 39, 41, 48)  # Classes de interesse
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- classify(raster_mapbiomas, rcl = rcl, others = 0)
+  
+  raster_padronizado <- terra::resample(raster_extraido, r_padrao, method = "near") %>%
+    terra::mask(terra::vect(pan_sf))
+  
+  # Salvar raster
+  terra::writeRaster(raster_padronizado,
+                     file.path(output_dir, "agro.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados de Fogo (vetor de pressão)
+#' @param raster_mapbiomas_fogo Raster de dados de fogo
+#' @param temp_file_fogo Caminho do arquivo temporário
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_fogo <- function(raster_mapbiomas_fogo, temp_file_fogo, r_padrao, output_dir, pan_sf) { 
+  # Reamostrar para o raster padrão
+  raster_redimensionado_fogo <- terra::resample(raster_mapbiomas_fogo, r_padrao, method = "near")
+  
+  # Garantir que o CRS do vetor é o mesmo do raster
+  if (terra::crs(raster_redimensionado_fogo) != terra::crs(pan_sf)) {
+    pan_sf <- terra::project(terra::vect(pan_sf), terra::crs(raster_redimensionado_fogo))
+  }
+  
+  # Aplicar máscara
+  raster_redimensionado_fogo <- terra::mask(raster_redimensionado_fogo, pan_sf)
+  
+  # Limpar arquivo temporário
+  unlink(temp_file_fogo)
+  
+  # Salvar raster final
+  terra::writeRaster(raster_redimensionado_fogo,
+                     file.path(output_dir, "fogo.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados do MapBiomas (Vegetação)
+#' @param mapbiomas_url URL dos dados do MapBiomas
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_mapbiomas_floresta <- function(raster_mapbiomas, r_padrao, output_dir, pan_sf) {
+  # Para uso e ocupação do solo
+  valores_interesse <- c(3)  # Classes de interesse
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- classify(raster_mapbiomas, rcl = rcl, others = 0)
+  
+  raster_padronizado <- terra::resample(raster_extraido, r_padrao, method = "near") %>%
+    terra::mask(terra::vect(pan_sf))
+  
+  # Salvar raster
+  terra::writeRaster(raster_padronizado,
+                     file.path(output_dir, "floresta.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados do MapBiomas (Vegetação)
+#' @param mapbiomas_url URL dos dados do MapBiomas
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+process_mapbiomas_savana <- function(raster_mapbiomas, r_padrao, output_dir, pan_sf) {
+  # Para uso e ocupação do solo
+  valores_interesse <- c(4)  # Classes de interesse
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- classify(raster_mapbiomas, rcl = rcl, others = 0)
+  
+  raster_padronizado <- terra::resample(raster_extraido, r_padrao, method = "near") %>%
+    terra::mask(terra::vect(pan_sf))
+  
+  # Salvar raster
+  terra::writeRaster(raster_padronizado,
+                     file.path(output_dir, "savana.tif"),
+                     overwrite = TRUE)
+}
+
+#' Função principal que executa todo o pipeline
+#' @param base_dir Diretório base do projeto
+main <- function(base_dir) {
+  # Configurar ambiente
+  dirs <- setup_environment(base_dir)
+  
+  # Carregar território PAN
+  pan_sf <- load_pan_territory(dirs$pan)
+  
+  # Criar raster padrão
+  r_padrao <- create_standard_raster(pan_sf)
+  
+  # URLs do MapBiomas (atualizar para URL válida)
+  mapbiomas_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_9/lclu/coverage/brasil_coverage_2023.tif"
+  mapbiomas_fogo_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_8/fire-col3/fire-simplifed/fire_accumulated_coverage/accumulated_burned_coverage_1985_2023.tif"
+  
+  # Baixar e processar MapBiomas uma vez
+  mapbiomas_data <- download_mapbiomas(mapbiomas_url, pan_sf)
+  mapbiomas_fogo_data <- download_mapbiomas_fogo(mapbiomas_fogo_url, pan_sf)
+  
+  # Processar cada conjunto de dados
+  process_species_from_csv(dirs$spp, "SPP_LISTA_2022_SIRGAS2000_CNCFLORA.shp")
+  
+  process_species(
+    file.path(dirs$spp, "spp_alvo.shp"),
+    mapbiomas_data$raster,
+    dirs$priorizacao,
+    r_padrao,
+    pan_sf
+  )
+  
+  process_benefited_species(
+    file.path(dirs$spp, "spp_beneficiada.shp"),
+    mapbiomas_data$raster,
+    dirs$priorizacao,
+    r_padrao,
+    pan_sf
+  )
+  
+  process_fogo(
+    mapbiomas_fogo_data$raster_fogo, 
+    mapbiomas_fogo_data$temp_file_fogo,
+    r_padrao, 
+    dirs$priorizacao, 
+    pan_sf
+  )
+  
+  process_mapbiomas_agricultura(
+    mapbiomas_data$raster, 
+    r_padrao, 
+    dirs$priorizacao, 
+    pan_sf
+  )
+  
+  process_mapbiomas_floresta(
+    mapbiomas_data$raster, 
+    r_padrao, 
+    dirs$priorizacao, 
+    pan_sf
+  )
+  
+  process_mapbiomas_savana(
+    mapbiomas_data$raster, 
+    r_padrao, 
+    dirs$priorizacao, 
+    pan_sf
+  )
+  
+  process_otto(dirs$otto, r_padrao, dirs$priorizacao, pan_sf)
+  process_uc(dirs$uc, r_padrao, dirs$priorizacao, pan_sf)
+  process_mineracao(dirs$mineracao, r_padrao, dirs$priorizacao, pan_sf)
+  process_energia(dirs$energia, r_padrao, dirs$priorizacao, pan_sf)
+  
+  # Limpar arquivo temporário
+  unlink(mapbiomas_data$temp_file)
+  unlink(mapbiomas_fogo_data$temp_file_fogo)
+  
+  cat("Processamento completo!\n")
+}
+
+# Executar o pipeline
+base_dir <- "D:/PAN - DELTA"
+main(base_dir)
+
+
+################################################################################
+################################################################################
+#################Função para gerar aquivo .spp para zonation####################
+################################################################################
+################################################################################
+
+
+# Função para gerar lista de arquivos .tif e criar arquivo de configuração
+generate_species_config <- function(base_dir) {
+  # Diretórios
+  priorizacao_dir <- file.path(base_dir, "ANALISES/priorizacao")
+  spp_dir <- file.path(priorizacao_dir, "spp_beneficiadas")
+  
+  # Lista todos os arquivos .tif no diretório de priorização
+  tif_files <- list.files(
+    path = priorizacao_dir,
+    pattern = "\\.tif$",
+    full.names = FALSE
+  )
+  
+  # Lista todos os arquivos .tif no diretório de espécies individuais
+  if (dir.exists(spp_dir)) {
+    spp_tifs <- list.files(
+      path = spp_dir,
+      pattern = "\\.tif$",
+      full.names = FALSE
+    )
+    # Combina todas as listas de arquivos
+    tif_files <- c(tif_files, spp_tifs)
+  }
+  
+  # Remove duplicatas e ordena
+  tif_files <- sort(unique(tif_files))
+  
+  # Cria o conteúdo do arquivo
+  header <- "#SpeciesWeight\t#alfa-value\t#BQP\t#NQP\t#depends_of_cell_removal_rules\t#species_names"
+  
+  # Cria as linhas para cada arquivo
+  lines <- sapply(tif_files, function(file) {
+    paste("0", "0", "1", "1", "1", file, sep = "\t")
+  })
+  
+  # Combina header e linhas
+  content <- c(header, lines)
+  
+  # Define o caminho do arquivo de saída
+  output_file <- file.path(priorizacao_dir, "00_splist_restauracao.spp")
+  
+  # Escreve o arquivo
+  writeLines(content, output_file)
+  
+  cat("Arquivo de configuração gerado em:", output_file, "\n")
+  cat("Total de arquivos processados:", length(tif_files), "\n")
+}
+
+# Exemplo de uso
+base_dir <- "D:/PAN - DELTA"  # Ajuste este caminho conforme necessário
+generate_species_config(base_dir)
+
+
+
+################################################################################
+################################################################################
+####################SELEÇÃO PRIORIDADES DO RASTER ZONATION######################
+################################################################################
+################################################################################
+
+# Carregar bibliotecas necessárias
+library(terra)
+library(sf)
+library(tools)
+
+# Função para processar arquivos .rank.compressed.tif
+processar_rank_compressed <- function(
+    base_dir, 
+    diretorio_saida = NULL, 
+    limiares = c(0.9500, 0.9000, 0.8500, 0.7000)
+) {
+  # Configurar caminhos
+  otto = file.path(base_dir, "ANALISES/dados_analise_r/otto")
+  
+  # Encontrar o shapefile de ottobacias (primeiro encontrado)
+  otto_shp <- list.files(
+    path = otto, 
+    pattern = "\\.shp$", 
+    full.names = TRUE, 
+    recursive = TRUE
+  )[1]
+  
+  # Verificar se encontrou o shapefile de ottobacias
+  if(length(otto_shp) == 0) {
+    stop("Nenhum shapefile de ottobacias encontrado.")
+  }
+  
+  # Carregar o shapefile de ottobacias
+  limite_ottobacias <- st_read(otto_shp)
+  
+  # Se o diretório de saída não for especificado, criar dentro do diretório base
+  if(is.null(diretorio_saida)) {
+    diretorio_saida <- file.path(base_dir,"resultado", "priorizacao")
+  }
+  
+  # Criar diretório de saída se não existir
+  dir.create(diretorio_saida, showWarnings = FALSE, recursive = TRUE)
+  
+  # Diretório de execução
+  diretorio_base <- file.path(base_dir, "ANALISES/executar")
+  
+  # Encontrar arquivos .rank.compressed.tif
+  arquivos_tif <- list.files(
+    diretorio_base, 
+    pattern = "\\.rank\\.compressed\\.tif$", 
+    recursive = TRUE, 
+    full.names = TRUE
+  )
+  
+  # Verificar se foram encontrados arquivos
+  if(length(arquivos_tif) == 0) {
+    stop("Nenhum arquivo .rank.compressed.tif encontrado.")
+  }
+  
+  # Imprimir arquivos encontrados
+  cat("Arquivos encontrados:\n")
+  print(arquivos_tif)
+  
+  # Processar cada arquivo
+  resultados <- lapply(arquivos_tif, function(caminho_arquivo) {
+    # Nome base do arquivo (sem extensão)
+    nome_base <- file_path_sans_ext(basename(caminho_arquivo))
+    
+    # Ler o raster
+    rast_atual <- rast(caminho_arquivo)
+    
+    # Converter limite das ottobacias para o CRS do raster
+    limite_ottobacias_proj <- st_transform(
+      limite_ottobacias, 
+      crs = crs(rast_atual)
+    )
+    
+    # Recortar o raster pelo limite das ottobacias
+    rast_recortado <- crop(rast_atual, vect(limite_ottobacias_proj))
+    rast_mascarado <- mask(rast_recortado, vect(limite_ottobacias_proj))
+    
+    # Criar máscaras para os limiares
+    mascaras <- lapply(limiares, function(limiar) {
+      rast_mascarado > limiar
+    })
+    
+    # Somar as máscaras
+    passol <- Reduce(`+`, mascaras)
+    
+    # Vetorizar o resultado
+    passol_shp <- as.polygons(passol, dissolve = TRUE)
+    
+    # Converter para sf
+    passol_sf <- st_as_sf(passol_shp)
+    
+    # Garantir coluna de geometria
+    st_geometry(passol_sf) <- "geometry"
+    
+    # Adicionar coluna de prioridade
+    passol_sf$Prioridade <- 1:nrow(passol_sf)
+    
+    # Criar subdiretório com o nome do arquivo .tif
+    dir_arquivo <- file.path(diretorio_saida, nome_base)
+    dir.create(dir_arquivo, showWarnings = FALSE, recursive = TRUE)
+    
+    # Caminho completo para salvar o shapefile
+    caminho_shapefile <- file.path(dir_arquivo, paste0(nome_base, "_.shp"))
+    
+    # Salvar o shapefile
+    st_write(
+      passol_sf, 
+      dsn = caminho_shapefile, 
+      driver = "ESRI Shapefile", 
+      delete_dsn = TRUE
+    )
+    
+    cat("Processado:", caminho_arquivo, "-> Salvo como:", caminho_shapefile, "\n")
+    
+    # Retornar informações sobre o processamento (opcional)
+    return(list(
+      arquivo_original = caminho_arquivo,
+      arquivo_saida = caminho_shapefile,
+      num_poligonos = nrow(passol_sf)
+    ))
+  })
+  
+  # Retornar resultados
+  return(resultados)
+}
+
+# Exemplo de uso
+base_dir <- "D:/PAN - DELTA"
+
+# Chamar a função
+resultados <- processar_rank_compressed(base_dir)
+
+################################################################################
+################################################################################
+#####################ANALISE DOS DADOS DE VETOR DE PRESSÃO######################
+################################################################################
+################################################################################
+
+
+#' Analisar sobreposição de espécies com vetores de pressão
+#' @param spp_sf Dados das espécies em formato sf
+#' @param pressure_raster Raster do vetor de pressão
+#' @param pressure_name Nome do vetor de pressão
+#' @return DataFrame com análise por espécie
+analyze_species_pressure <- function(spp_sf, pressure_raster, pressure_name) {
+  points_terra <- terra::vect(spp_sf)
+  point_values <- terra::extract(pressure_raster, points_terra)
+  
+  # Combinar valores extraídos com dados originais e converter para dataframe normal
+  results <- spp_sf %>%
+    st_drop_geometry() %>%  # Remove a geometria antes do bind_cols
+    bind_cols(pressure = point_values[[2]]) %>%
+    group_by(specie_fb, categoria) %>%
+    summarise(
+      total_points = n(),
+      points_in_pressure = sum(pressure == 1, na.rm = TRUE),
+      percentage = round((points_in_pressure / total_points) * 100, 2),
+      .groups = "drop"
+    ) %>%
+    rename(!!pressure_name := percentage)
+  
+  return(results)
+}
+
+#' Analisar dados do PAN com análise detalhada por espécie
+#' @param base_dir Diretório base do projeto
+analyze_pan_data <- function(base_dir) {
+  # Configurar diretórios
+  dirs <- list(
+    priorizacao = file.path(base_dir, "ANALISES/priorizacao"),
+    pan = file.path(base_dir, "ANALISES/dados_analise_r/territorio"),
+    spp = file.path(base_dir, "ANALISES/dados_analise_r/spp"),
+    results = file.path(base_dir, "ANALISES/resultados")
+  )
+  
+  # Criar diretório de resultados
+  if (!dir.exists(dirs$results)) {
+    dir.create(dirs$results, recursive = TRUE)
+    cat("Diretório de resultados criado:", dirs$results, "\n")
+  }
+  
+  # Carregar dados de espécies
+  spp_file <- file.path(dirs$spp, "SPPLISTA2022_PAN_PT_CP_CNCNFLORA_SIRGAS2000_CNCFLORA_15012025.shp")
+  spp_sf <- st_read(spp_file, quiet = TRUE)
+  
+  # Análise por categoria de ameaça
+  threat_summary <- spp_sf %>%
+    st_drop_geometry() %>%  # Remove a geometria antes do group_by
+    group_by(categoria) %>%
+    summarise(
+      n_species = n_distinct(specie_fb),
+      n_points = n(),
+      .groups = "drop"
+    )
+  
+  cat("\nResumo por categoria de ameaça:\n")
+  print(knitr::kable(threat_summary))
+  
+  # Carregar e analisar vetores de pressão
+  pressure_vectors <- c(
+    "agro" = "agro.tif",
+    "mineracao" = "mineracao.tif",
+    "energia" = "energia.tif",
+    "fogo" = "fogo.tif"
+  )
+  
+  # Análise por espécie para cada vetor de pressão
+  pressure_results <- list()
+  for (pname in names(pressure_vectors)) {
+    raster_path <- file.path(dirs$priorizacao, pressure_vectors[pname])
+    if (!file.exists(raster_path)) {
+      warning(paste("Arquivo não encontrado:", raster_path))
+      next
+    }
+    
+    r <- rast(raster_path)
+    pressure_results[[pname]] <- analyze_species_pressure(spp_sf, r, pname)
+  }
+  
+  # Combinar resultados de todos os vetores
+  species_pressure_analysis <- pressure_results[[1]]
+  for (i in 2:length(pressure_results)) {
+    species_pressure_analysis <- full_join(
+      species_pressure_analysis,
+      pressure_results[[i]],
+      by = c("specie_fb", "categoria", "total_points")
+    )
+  }
+  
+  # Organizar tabela final
+  species_summary <- species_pressure_analysis %>%
+    arrange(categoria, specie_fb) %>%
+    mutate(across(c(agro, mineracao, energia, fogo), 
+                  ~format(round(., 2), decimal.mark = ",")))
+  
+  # Criar tabelas separadas por categoria
+  categories <- c("CR", "EN", "VU")
+  category_tables <- lapply(categories, function(cat) {
+    species_summary %>%
+      filter(categoria == cat) %>%
+      select(-categoria)
+  })
+  
+  names(category_tables) <- categories
+  
+  # Salvar resultados em CSV (um arquivo por categoria)
+  for (cat in categories) {
+    write.csv(category_tables[[cat]], 
+              file.path(dirs$results, paste0("especies_", cat, "_pressao.csv")),
+              row.names = FALSE)
+  }
+  
+  # Criar visualizações
+  # 1. Gráfico de boxplot por categoria e pressão
+  pressure_long <- species_pressure_analysis %>%
+    pivot_longer(cols = c(agro, mineracao, energia, fogo),
+                 names_to = "pressure",
+                 values_to = "percentage") %>%
+    mutate(percentage = as.numeric(percentage))
+  
+  p1 <- ggplot(pressure_long, 
+               aes(x = pressure, y = percentage, fill = categoria)) +
+    geom_boxplot() +
+    theme_minimal() +
+    labs(
+      title = "Distribuição da Pressão por Categoria de Ameaça",
+      x = "Vetor de Pressão",
+      y = "Porcentagem de Pontos (%)",
+      fill = "Categoria"
+    ) +
+    scale_fill_brewer(palette = "Set2")
+  
+  # 2. Heatmap de pressão média por categoria
+  pressure_means <- pressure_long %>%
+    group_by(categoria, pressure) %>%
+    summarise(
+      mean_percentage = mean(percentage, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  p2 <- ggplot(pressure_means, 
+               aes(x = pressure, y = categoria, fill = mean_percentage)) +
+    geom_tile() +
+    scale_fill_viridis_c() +
+    theme_minimal() +
+    labs(
+      title = "Média de Pressão por Categoria",
+      x = "Vetor de Pressão",
+      y = "Categoria de Ameaça",
+      fill = "Média (%)"
+    )
+  
+  # Exibir visualizações
+  print(p1)
+  print(p2)
+  
+  # Salvar visualizações
+  ggsave(file.path(dirs$results, "pressao_por_categoria_box.png"), 
+         p1, width = 10, height = 6)
+  ggsave(file.path(dirs$results, "pressao_por_categoria_heat.png"), 
+         p2, width = 10, height = 6)
+  
+  # Criar um resumo estatístico por categoria
+  summary_stats <- pressure_long %>%
+    group_by(categoria, pressure) %>%
+    summarise(
+      mean = mean(percentage, na.rm = TRUE),
+      median = median(percentage, na.rm = TRUE),
+      sd = sd(percentage, na.rm = TRUE),
+      n_species = n_distinct(specie_fb),
+      .groups = "drop"
+    ) %>%
+    arrange(categoria, pressure)
+  
+  write.csv(summary_stats, 
+            file.path(dirs$results, "resumo_estatistico_categorias.csv"),
+            row.names = FALSE)
+  
+  cat("\nAnálise completa! Resultados salvos em:", dirs$results, "\n")
+  
+  return(list(
+    threat_summary = threat_summary,
+    species_pressure = species_summary,
+    summary_stats = summary_stats
+  ))
+}
+
+
+base_dir <- "D:/PAN - DELTA"
+resultados <- analyze_pan_data(base_dir)
