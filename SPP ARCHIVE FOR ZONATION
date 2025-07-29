@@ -1,0 +1,58 @@
+################################################################################
+################################################################################
+#################Função para gerar aquivo .spp para zonation####################
+################################################################################
+################################################################################
+
+
+# Função para gerar lista de arquivos .tif e criar arquivo de configuração
+generate_species_config <- function(base_dir) {
+  # Diretórios
+  priorizacao_dir <- file.path(base_dir, "ANALISES/priorizacao")
+  spp_dir <- file.path(priorizacao_dir, "spp_alvo")
+  
+  # Lista todos os arquivos .tif no diretório de priorização
+  tif_files <- list.files(
+    path = priorizacao_dir,
+    pattern = "\\.tif$",
+    full.names = FALSE
+  )
+  
+  # Lista todos os arquivos .tif no diretório de espécies individuais
+  if (dir.exists(spp_dir)) {
+    spp_tifs <- list.files(
+      path = spp_dir,
+      pattern = "\\.tif$",
+      full.names = FALSE
+    )
+    # Combina todas as listas de arquivos
+    tif_files <- c(tif_files, spp_tifs)
+  }
+  
+  # Remove duplicatas e ordena
+  tif_files <- sort(unique(tif_files))
+  
+  # Cria o conteúdo do arquivo
+  header <- "#SpeciesWeight\t#alfa-value\t#BQP\t#NQP\t#depends_of_cell_removal_rules\t#species_names"
+  
+  # Cria as linhas para cada arquivo
+  lines <- sapply(tif_files, function(file) {
+    paste("0", "0", "1", "1", "1", file, sep = "\t")
+  })
+  
+  # Combina header e linhas
+  content <- c(header, lines)
+  
+  # Define o caminho do arquivo de saída
+  output_file <- file.path(priorizacao_dir, "00_splist_restauracao.spp")
+  
+  # Escreve o arquivo
+  writeLines(content, output_file)
+  
+  cat("Arquivo de configuração gerado em:", output_file, "\n")
+  cat("Total de arquivos processados:", length(tif_files), "\n")
+}
+
+# Exemplo de uso
+base_dir <- "D:/PAN - DELTA"  # Ajuste este caminho conforme necessário
+generate_species_config(base_dir)
