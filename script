@@ -464,7 +464,7 @@ process_uc <- function(uc_dir, r_padrao, output_dir, pan_sf) {
   
   uc_shp <- st_read(uc_file, quiet = TRUE) %>%
     st_transform(crs = 4674) %>%
-    filter(grupo == "Proteção Integral")  # Filtra apenas UCs de Proteção Integral
+    filter(categoria != "Área de Proteção Ambiental")  # Filtra as APAs
   
   # Verifica se existem UCs de Proteção Integral
   if (nrow(uc_shp) == 0) {
@@ -479,7 +479,7 @@ process_uc <- function(uc_dir, r_padrao, output_dir, pan_sf) {
   uc_raster[is.na(uc_raster)] <- 1   # Áreas fora das UCs
   
   terra::writeRaster(uc_raster,
-                     file.path(output_dir, "ucs_protecao_integral.tif"),
+                     file.path(output_dir, "ucs_sem_apa.tif"),
                      overwrite = TRUE)
 }
 
@@ -581,16 +581,53 @@ process_fogo <- function(raster_mapbiomas_fogo, temp_file_fogo, r_padrao, output
 }
 
 #' Processar dados de Qualidade de Pasto (vetor de pressão)
+#' Essa função, unifica as classes de interesse em uma unica classe.
+#' @param raster_mapbiomas_pasto Raster de dados de Pasto
+#' @param temp_file_pasto Caminho do arquivo temporário
+#' @param r_padrao Raster padrão
+#' @param output_dir Diretório de saída
+#' @param pan_sf Objeto sf do território PAN
+#process_pasto <- function(raster_mapbiomas_pasto, temp_file_pasto, r_padrao, output_dir, pan_sf) { 
+  # Extrair apenas os valores específicos (2 e 3)
+  valores_interesse <- c(2, 3)  # Classes de interesse para pasto
+  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
+  raster_extraido <- terra::classify(raster_mapbiomas_pasto, rcl = rcl, others = 0)
+  
+  # Reamostrar para o raster padrão
+  raster_redimensionado_pasto <- terra::resample(raster_extraido, r_padrao, method = "near")
+  
+  # Garantir que o CRS do vetor é o mesmo do raster
+  if (terra::crs(raster_redimensionado_pasto) != terra::crs(pan_sf)) {
+    pan_sf <- terra::project(terra::vect(pan_sf), terra::crs(raster_redimensionado_pasto))
+  }
+  
+  # Aplicar máscara
+  raster_redimensionado_pasto <- terra::mask(raster_redimensionado_pasto, pan_sf)
+  
+  # Limpar arquivo temporário
+  unlink(temp_file_pasto)
+  
+  # Salvar raster final
+  terra::writeRaster(raster_redimensionado_pasto,
+                     file.path(output_dir, "pasto_q.tif"),
+                     overwrite = TRUE)
+}
+
+#' Processar dados de Qualidade de Pasto (vetor de pressão)
+#' Essa função utiliza as duas classes de interesse na mesma imagem, não padroniza tudo como 1.
 #' @param raster_mapbiomas_pasto Raster de dados de Pasto
 #' @param temp_file_pasto Caminho do arquivo temporário
 #' @param r_padrao Raster padrão
 #' @param output_dir Diretório de saída
 #' @param pan_sf Objeto sf do território PAN
 process_pasto <- function(raster_mapbiomas_pasto, temp_file_pasto, r_padrao, output_dir, pan_sf) { 
-  # Extrair apenas os valores específicos (2 e 3)
+  # Extrair apenas os valores específicos (2 e 3), mantendo-os diferenciados
   valores_interesse <- c(2, 3)  # Classes de interesse para pasto
-  rcl <- cbind(valores_interesse, rep(1, length(valores_interesse)))
-  raster_extraido <- terra::classify(raster_mapbiomas_pasto, rcl = rcl, others = 0)
+  
+  # Criar função para manter apenas os valores de interesse
+  raster_extraido <- terra::ifel(raster_mapbiomas_pasto %in% valores_interesse, 
+                                 raster_mapbiomas_pasto, 
+                                 0)
   
   # Reamostrar para o raster padrão
   raster_redimensionado_pasto <- terra::resample(raster_extraido, r_padrao, method = "near")
@@ -1098,3 +1135,4 @@ main <- function(base_dir) {
 # Executar o pipeline
 base_dir <- "D:/PAN - DELTA"
 main(base_dir)
+
