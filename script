@@ -1044,8 +1044,8 @@ main <- function(base_dir) {
   r_padrao <- create_standard_raster(pan_sf)
   
   # URLs do MapBiomas (atualizar para URL válida)
-  mapbiomas_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_9/lclu/coverage/brasil_coverage_2023.tif"
-  mapbiomas_fogo_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_8/fire-col3/fire-simplifed/fire_accumulated_coverage/accumulated_burned_coverage_1985_2023.tif"
+  mapbiomas_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_10/lulc/coverage/brazil_coverage_2024.tif"
+  mapbiomas_fogo_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_9/fire col4/accumulated_burned_coverage_v1/mapbiomas_fire_col4_br_accumulated_burned_coverage_1985_2024.tif"
   mapbiomas_pasto_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_9/pasture-1/mapbiomas_collection90_pasture_vigor_v1/mapbiomas_collection90_pasture_vigor_v1-vigor_2023.tif"
   mapbiomas_veg_sec_url <- "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/collection_9/lulc-1/sec-veg-1/mapbiomas_collection90_secondary_vegetation_age_v1/mapbiomas_collection90_secondary_vegetation_age_v1-secondary_vegetation_age_2023.tif"
   
