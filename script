@@ -6,6 +6,17 @@ library(tidyverse)
 library(knitr)
 library(scales)
 
+
+
+run_priorization(input_spp, input_sph)
+
+run_priorization <- function(input_ssp, input_sph) {
+  setup_environment()
+  
+}
+
+
+
 # Configuração de área de trabalho
 setwd('D:/PAN - DELTA/ANALISES/priorizacao')
 getwd()
